@@ -1,0 +1,269 @@
+#include <gtest/gtest.h>
+
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <utility>
+#include <vector>
+
+#include "onnxcc/memory/arena.h"
+
+namespace {
+
+using onnxcc::MemoryArena;
+
+std::size_t address_of(void* p) {
+    return reinterpret_cast<std::uintptr_t>(p);
+}
+
+// aligned_alloc needs a multiple of 64, so asking for 100 bytes really gives 128
+TEST(MemoryArena, TotalIsRoundedUpToSixtyFour) {
+    EXPECT_EQ(128u, MemoryArena(100).bytes_total());
+    EXPECT_EQ(64u, MemoryArena(1).bytes_total());
+    EXPECT_EQ(64u, MemoryArena(64).bytes_total());
+    EXPECT_EQ(0u, MemoryArena(0).bytes_total());
+}
+
+// a fresh arena has handed out nothing yet, used and peak are both 0
+TEST(MemoryArena, StartsEmpty) {
+    MemoryArena arena(1024);
+
+    EXPECT_EQ(0u, arena.bytes_used());
+    EXPECT_EQ(0u, arena.bytes_peak());
+}
+
+// whatever size you ask for (1, 7, 65...), the address you get back is a multiple of 64
+TEST(MemoryArena, EveryAllocationIsSixtyFourByteAligned) {
+    MemoryArena arena(64 * 1024);
+
+    for (std::size_t bytes : {1u, 7u, 63u, 64u, 65u, 127u, 4096u}) {
+        void* p = arena.allocate(bytes);
+        ASSERT_NE(nullptr, p) << "ran out of room at " << bytes << " bytes";
+        EXPECT_EQ(0u, address_of(p) % 64) << "misaligned for " << bytes << " bytes";
+    }
+}
+
+// asking for 128/256/4096 alignment gives an address that is a multiple of that, e.g. 4224 not 4160 for 128
+TEST(MemoryArena, AlignmentAboveSixtyFourAlignsTheAddress) {
+    MemoryArena arena(64 * 1024);
+
+    for (std::size_t alignment : {128u, 256u, 4096u}) {
+        for (int i = 0; i < 4; ++i) {
+            void* p = arena.allocate(1, alignment);
+            ASSERT_NE(nullptr, p) << "ran out of room at alignment " << alignment;
+            EXPECT_EQ(0u, address_of(p) % alignment) << "misaligned for " << alignment;
+        }
+    }
+}
+
+// two 100 byte blocks are at least 100 bytes apart, so writing one can't clobber the other
+TEST(MemoryArena, AllocationsDoNotOverlap) {
+    MemoryArena arena(1024);
+
+    auto* first = static_cast<std::byte*>(arena.allocate(100));
+    auto* second = static_cast<std::byte*>(arena.allocate(100));
+
+    ASSERT_NE(nullptr, first);
+    ASSERT_NE(nullptr, second);
+    EXPECT_GE(second - first, 100);
+}
+
+// data you wrote stays intact after more memory is handed out after it
+TEST(MemoryArena, WrittenBytesSurviveLaterAllocations) {
+    MemoryArena arena(1024);
+
+    auto* first = static_cast<std::byte*>(arena.allocate(8));
+    ASSERT_NE(nullptr, first);
+    for (int i = 0; i < 8; ++i) {
+        first[i] = static_cast<std::byte>(i);
+    }
+
+    ASSERT_NE(nullptr, arena.allocate(256));
+
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_EQ(static_cast<std::byte>(i), first[i]);
+    }
+}
+
+// allocate(1) twice uses 65 bytes, not 2: the 63 bytes of padding to reach 64 count too
+TEST(MemoryArena, UsedCountsPaddingNotJustPayload) {
+    MemoryArena arena(1024);
+
+    ASSERT_NE(nullptr, arena.allocate(1));
+    EXPECT_EQ(1u, arena.bytes_used());
+
+    // 1 rounds up to 64 before the second allocation starts
+    ASSERT_NE(nullptr, arena.allocate(1));
+    EXPECT_EQ(65u, arena.bytes_used());
+}
+
+// when the arena is full you get nullptr, nothing changes, and smaller requests still work
+TEST(MemoryArena, ExhaustionReturnsNullAndLeavesArenaUsable) {
+    MemoryArena arena(128);
+
+    ASSERT_NE(nullptr, arena.allocate(100));
+    const std::size_t used = arena.bytes_used();
+
+    EXPECT_EQ(nullptr, arena.allocate(100));
+    EXPECT_EQ(used, arena.bytes_used()) << "a failed allocation must not move the offset";
+
+    // the rest of the buffer is still handed out
+    EXPECT_NE(nullptr, arena.allocate(8, 1));
+}
+
+// 100 bytes would fit after offset 1, but padding up to 64 leaves only 64, so you get nullptr
+TEST(MemoryArena, PaddingTest){
+    MemoryArena arena(128);
+    ASSERT_NE(nullptr, arena.allocate(1));
+    std:: size_t t = arena.bytes_used();
+    EXPECT_EQ(nullptr, arena.allocate(100, 64));
+    EXPECT_EQ(t, arena.bytes_used());
+    EXPECT_NE(nullptr, arena.allocate(100, 1)); //passed with no padding
+}
+
+// a giant size like SIZE_MAX would wrap around to a small number, it must return nullptr instead
+TEST(MemoryArena, HugeRequestOverflowsInsteadOfSucceeding) {
+    MemoryArena arena(1024);
+
+    EXPECT_EQ(nullptr, arena.allocate(std::numeric_limits<std::size_t>::max()));
+    EXPECT_EQ(nullptr, arena.allocate(std::numeric_limits<std::size_t>::max() - 32));
+    EXPECT_EQ(0u, arena.bytes_used());
+}
+
+// alignment 0, 3 or 48 makes no sense and returns nullptr, 32 is fine
+TEST(MemoryArena, AlignmentMustBeAPowerOfTwo) {
+    MemoryArena arena(1024);
+
+    EXPECT_EQ(nullptr, arena.allocate(8, 0));
+    EXPECT_EQ(nullptr, arena.allocate(8, 3));
+    EXPECT_EQ(nullptr, arena.allocate(8, 48));
+    EXPECT_NE(nullptr, arena.allocate(8, 32));
+}
+
+// with alignment 1 there is no padding, so two 1 byte allocations use exactly 2 bytes
+TEST(MemoryArena, SmallerAlignmentWastesLessPadding) {
+    MemoryArena arena(1024);
+
+    ASSERT_NE(nullptr, arena.allocate(1, 1));
+    void* p = arena.allocate(1, 1);
+
+    ASSERT_NE(nullptr, p);
+    EXPECT_EQ(2u, arena.bytes_used()) << "alignment 1 should not pad at all";
+}
+
+// allocate(0) gives a valid pointer but uses up no space
+TEST(MemoryArena, ZeroBytesReturnsAPointerWithoutAdvancing) {
+    MemoryArena arena(1024);
+
+    ASSERT_NE(nullptr, arena.allocate(32));
+    const std::size_t used = arena.bytes_used();
+
+    EXPECT_NE(nullptr, arena.allocate(0));
+    EXPECT_EQ(used, arena.bytes_used());
+}
+
+// reset() starts over from 0 but keeps the buffer and remembers the highest usage (peak)
+TEST(MemoryArena, ResetRewindsUsedButKeepsPeak) {
+    MemoryArena arena(1024);
+
+    ASSERT_NE(nullptr, arena.allocate(300));
+    const std::size_t peak = arena.bytes_peak();
+    ASSERT_EQ(300u, peak);
+
+    arena.reset();
+
+    EXPECT_EQ(0u, arena.bytes_used());
+    EXPECT_EQ(peak, arena.bytes_peak());
+    EXPECT_EQ(1024u, arena.bytes_total()) << "reset must not free the buffer";
+}
+
+// after reset() the next allocation gets the very same address as the first one did
+TEST(MemoryArena, ResetReusesTheSameMemory) {
+    MemoryArena arena(1024);
+
+    void* first = arena.allocate(64);
+    arena.reset();
+    void* second = arena.allocate(64);
+
+    EXPECT_EQ(first, second);
+}
+
+// use 500, reset, use 100: used is 100 but peak still says 500
+TEST(MemoryArena, PeakTracksTheLargestRunNotTheLast) {
+    MemoryArena arena(1024);
+
+    ASSERT_NE(nullptr, arena.allocate(500));
+    arena.reset();
+    ASSERT_NE(nullptr, arena.allocate(100));
+
+    EXPECT_EQ(100u, arena.bytes_used());
+    EXPECT_EQ(500u, arena.bytes_peak());
+}
+
+// moving an arena hands its buffer to the new one, the old one is left empty and owns nothing
+TEST(MemoryArena, MoveConstructionEmptiesTheSource) {
+    MemoryArena source(1024);
+    void* before = source.allocate(128);
+    ASSERT_NE(nullptr, before);
+
+    MemoryArena moved(std::move(source));
+
+    EXPECT_EQ(1024u, moved.bytes_total());
+    EXPECT_EQ(128u, moved.bytes_used());
+    EXPECT_EQ(0u, source.bytes_total());  // NOLINT(bugprone-use-after-move)
+    EXPECT_EQ(0u, source.bytes_used());
+    EXPECT_EQ(nullptr, source.allocate(8)) << "a moved-from arena owns no buffer";
+    EXPECT_NE(nullptr, moved.allocate(8));
+}
+
+// target = std::move(source) frees target's old buffer and takes over source's
+TEST(MemoryArena, MoveAssignmentReplacesTheTarget) {
+    MemoryArena target(64);
+    MemoryArena source(1024);
+    ASSERT_NE(nullptr, source.allocate(256));
+
+    target = std::move(source);
+
+    EXPECT_EQ(1024u, target.bytes_total());
+    EXPECT_EQ(256u, target.bytes_used());
+    EXPECT_EQ(0u, source.bytes_total());  // NOLINT(bugprone-use-after-move)
+    EXPECT_NE(nullptr, target.allocate(8));
+}
+
+// arena = std::move(arena) must not free its own buffer by accident
+TEST(MemoryArena, SelfMoveAssignmentKeepsTheBuffer) {
+    MemoryArena arena(1024);
+    ASSERT_NE(nullptr, arena.allocate(128));
+
+    MemoryArena& alias = arena;
+    arena = std::move(alias);
+
+    EXPECT_EQ(1024u, arena.bytes_total());
+    EXPECT_EQ(128u, arena.bytes_used());
+    EXPECT_NE(nullptr, arena.allocate(8));
+}
+
+// MemoryArena(0) owns no memory, so any real allocation returns nullptr
+TEST(MemoryArena, ZeroSizedArenaHandsOutNothing) {
+    MemoryArena arena(0);
+
+    EXPECT_EQ(0u, arena.bytes_total());
+    EXPECT_EQ(nullptr, arena.allocate(1));
+}
+
+// four 64 byte blocks fill a 256 byte arena exactly, the very next byte doesn't fit
+TEST(MemoryArena, FillingTheWholeBufferIsAllowed) {
+    MemoryArena arena(256);
+    std::vector<void*> blocks;
+
+    for (int i = 0; i < 4; ++i) {
+        void* p = arena.allocate(64);
+        ASSERT_NE(nullptr, p) << "block " << i;
+        blocks.push_back(p);
+    }
+
+    EXPECT_EQ(256u, arena.bytes_used());
+    EXPECT_EQ(nullptr, arena.allocate(1));
+}
+
+}  // namespace
