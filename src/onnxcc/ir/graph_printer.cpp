@@ -1,10 +1,9 @@
 #include "onnxcc/ir/graph_printer.h"
 
 #include <cstddef>
-#include <cstdint>
+#include <exception>
 #include <ostream>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include "onnxcc/ir/datatype.h"
@@ -34,6 +33,7 @@ void print_tensor_summary(const std::vector<Tensor>& tensors, std::ostream& out)
 
 // Computes the size in bytes of a tensor's data. If data is stored in memory,
 // uses data.size(); otherwise computes from shape and dtype if defined.
+// If shape is dynamic or calculation overflows, returns 0 as size cannot be determined.
 std::size_t get_tensor_byte_size(const Tensor& t) {
     if (!t.data.empty()) {
         return t.data.size();
@@ -41,7 +41,8 @@ std::size_t get_tensor_byte_size(const Tensor& t) {
     if (t.dtype != DataType::UNDEFINED && !t.shape.is_dynamic()) {
         try {
             return t.shape.num_bytes(t.dtype);
-        } catch (...) {
+        } catch (const std::exception&) {
+            // Shape overflow or undefined size returns 0
             return 0;
         }
     }
@@ -76,7 +77,11 @@ void print_graph(const Graph& graph, std::ostream& out) {
     out << "nodes (" << graph.nodes.size() << "):\n";
     std::size_t node_idx = 0;
     for (const Node& node : graph.nodes) {
-        out << "[" << node_idx << "] " << node.op_type << " (" << node.name << "): ";
+        out << "[" << node_idx << "] " << node.op_type;
+        if (!node.name.empty()) {
+            out << " (" << node.name << ")";
+        }
+        out << ":";
 
         // empty name represents an absent optional input (node.h), skip to avoid phantom edges
         bool first_input = true;
@@ -86,12 +91,14 @@ void print_graph(const Graph& graph, std::ostream& out) {
             }
             if (!first_input) {
                 out << ", ";
+            } else {
+                out << " ";
             }
             out << input_name;
             first_input = false;
         }
 
-        out << " -> ";
+        out << " ->";
 
         bool first_output = true;
         for (const std::string& output_name : node.outputs) {
@@ -100,6 +107,8 @@ void print_graph(const Graph& graph, std::ostream& out) {
             }
             if (!first_output) {
                 out << ", ";
+            } else {
+                out << " ";
             }
             out << output_name;
             first_output = false;

@@ -1,15 +1,20 @@
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "onnxcc/ir/datatype.h"
 #include "onnxcc/ir/graph.h"
 #include "onnxcc/ir/graph_printer.h"
 #include "onnxcc/ir/node.h"
+#include "onnxcc/ir/status.h"
 #include "onnxcc/ir/tensor.h"
+#include "onnxcc/parser/parser.h"
 
 namespace onnxcc {
 namespace {
@@ -56,6 +61,13 @@ Graph make_test_graph() {
     conv_no_bias.outputs = {"conv2_out"};
     g.nodes.push_back(std::move(conv_no_bias));
 
+    // Node 2: Constant node with no inputs to test stray space formatting
+    Node constant_node;
+    constant_node.name = "c1";
+    constant_node.op_type = "Constant";
+    constant_node.outputs = {"const_out"};
+    g.nodes.push_back(std::move(constant_node));
+
     return g;
 }
 
@@ -95,7 +107,61 @@ TEST(GraphPrinter, SkipsEmptyStringInputsWithoutPhantomEdges) {
     EXPECT_NE(out.find("[1] Conv (conv2): conv1_out, conv2_w -> conv2_out\n"),
               std::string::npos);
     EXPECT_EQ(out.find("conv2_w,  ->"), std::string::npos);
-    EXPECT_EQ(out.find("conv2_w, ->"), std::string::npos);
+}
+
+TEST(GraphPrinter, NodeWithNoInputsHasNoStraySpace) {
+    const Graph g = make_test_graph();
+    std::ostringstream oss;
+    print_graph(g, oss);
+    const std::string out = oss.str();
+
+    // Node without inputs must print "Constant (c1): -> const_out" (no double space)
+    EXPECT_NE(out.find("[2] Constant (c1): -> const_out\n"), std::string::npos);
+}
+
+TEST(GraphPrinter, NodeWithEmptyNameOmitsParentheses) {
+    Graph g;
+    Node n;
+    n.op_type = "Relu";
+    n.inputs = {"x"};
+    n.outputs = {"y"};
+    g.nodes.push_back(std::move(n));
+
+    std::ostringstream oss;
+    print_graph(g, oss);
+    const std::string out = oss.str();
+
+    EXPECT_NE(out.find("[0] Relu: x -> y\n"), std::string::npos);
+    EXPECT_EQ(out.find("Relu ():"), std::string::npos);
+}
+
+TEST(GraphPrinter, InitializerFallbackToShapeWhenDataEmpty) {
+    Graph g;
+    // {2, 3} FLOAT32 has 6 elements * 4 bytes = 24 bytes
+    Tensor t;
+    t.name = "w_shape_only";
+    t.dtype = DataType::FLOAT32;
+    t.shape.dims = {2, 3};
+    t.is_initializer = true;
+    g.initializers.push_back(std::move(t));
+
+    std::ostringstream oss;
+    print_graph(g, oss);
+    const std::string out = oss.str();
+
+    EXPECT_NE(out.find("w_shape_only: FLOAT32 [2, 3] (24 bytes)"), std::string::npos);
+    EXPECT_NE(out.find("total initializer size: 24 bytes\n"), std::string::npos);
+}
+
+TEST(GraphPrinter, DynamicDimensionRendersAsQuestionMark) {
+    Graph g;
+    g.inputs.push_back(make_dummy_tensor("dynamic_input", DataType::FLOAT32, {-1, 10}));
+
+    std::ostringstream oss;
+    print_graph(g, oss);
+    const std::string out = oss.str();
+
+    EXPECT_NE(out.find("dynamic_input (FLOAT32 [?, 10])"), std::string::npos);
 }
 
 TEST(GraphPrinter, PrintsInitializersAndTotalBytes) {
@@ -121,6 +187,42 @@ TEST(GraphPrinter, EmptyGraphRendersCleanly) {
     EXPECT_NE(out.find("nodes (0):\n"), std::string::npos);
     EXPECT_NE(out.find("initializers (0):\n"), std::string::npos);
     EXPECT_NE(out.find("total initializer size: 0 bytes\n"), std::string::npos);
+}
+
+// ── ONNX Fixture Test (Checklist item) ──
+TEST(GraphPrinter, ParsesAndPrintsRealMlpModel) {
+    // Model path passed via ONNXCC_FIXTURE_DIR CMake definition
+    std::filesystem::path fixture_path = std::filesystem::path(ONNXCC_FIXTURE_DIR) / "mlp.onnx";
+    if (!std::filesystem::exists(fixture_path)) {
+        fixture_path = std::filesystem::path(ONNXCC_FIXTURE_DIR) / "tiny_mlp.onnx";
+    }
+
+    if (!std::filesystem::exists(fixture_path)) {
+        GTEST_SKIP() << "Fixture file not found at " << fixture_path;
+    }
+
+    Graph graph;
+    const Status status = parser::parse_file(fixture_path.string(), graph);
+    ASSERT_TRUE(status.ok()) << status.message();
+
+    // Verify known ONNX facts
+    EXPECT_EQ(graph.nodes.size(), 6u);
+    EXPECT_EQ(graph.initializers.size(), 4u);
+
+    std::ostringstream oss;
+    print_graph(graph, oss);
+    const std::string out = oss.str();
+
+    // Verify nodes and initializers in printed output
+    EXPECT_NE(out.find("nodes (6):"), std::string::npos);
+    EXPECT_NE(out.find("matmul_1"), std::string::npos);
+    EXPECT_NE(out.find("matmul_2"), std::string::npos);
+    EXPECT_NE(out.find("initializers (4):"), std::string::npos);
+    EXPECT_NE(out.find("w1: FLOAT32 [4, 8] (128 bytes)"), std::string::npos);
+    EXPECT_NE(out.find("b1: FLOAT32 [8] (32 bytes)"), std::string::npos);
+    EXPECT_NE(out.find("w2: FLOAT32 [8, 2] (64 bytes)"), std::string::npos);
+    EXPECT_NE(out.find("b2: FLOAT32 [2] (8 bytes)"), std::string::npos);
+    EXPECT_NE(out.find("total initializer size: 232 bytes"), std::string::npos);
 }
 
 }  // namespace onnxcc
