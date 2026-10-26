@@ -5,6 +5,10 @@
 #include <system_error>
 
 #include "onnxcc/cli/exit_codes.h"
+#include "onnxcc/ir/graph.h"
+#include "onnxcc/ir/graph_printer.h"
+#include "onnxcc/ir/status.h"
+#include "onnxcc/parser/parser.h"
 #include "onnxcc/version.h"
 
 namespace onnxcc::cli {
