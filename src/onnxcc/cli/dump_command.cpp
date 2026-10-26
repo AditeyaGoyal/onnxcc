@@ -36,7 +36,13 @@ namespace onnxcc::cli {
         }
 
         if (options.show_graph) {
-            out << "graph: not parsed yet, the model is only validated as a path for now\n";
+            Graph graph;
+            const Status parse_status = parser::parse_file(options.model, graph);
+            if (!parse_status.ok()) {
+                err << "onnxcc dump: error: " << parse_status.message() << "\n";
+                return kExitFailure;
+            }
+            print_graph(graph, out);
         }
 
         return kExitOk;
