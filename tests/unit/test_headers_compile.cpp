@@ -8,6 +8,7 @@
 #include "onnxcc/ir/attribute.h"
 #include "onnxcc/ir/datatype.h"
 #include "onnxcc/ir/graph.h"
+#include "onnxcc/ir/graph_printer.h"
 #include "onnxcc/ir/node.h"
 #include "onnxcc/ir/status.h"
 #include "onnxcc/ir/tensor.h"

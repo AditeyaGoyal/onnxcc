@@ -80,4 +80,27 @@ TEST(Cli, DirectoryIsRejected) {
     EXPECT_TRUE(out.str().empty());
 }
 
+TEST(Cli, DumpShowGraphPrintsParsedGraph) {
+    std::filesystem::path fixture_path = std::filesystem::path(ONNXCC_FIXTURE_DIR) / "mlp.onnx";
+    if (!std::filesystem::exists(fixture_path)) {
+        fixture_path = std::filesystem::path(ONNXCC_FIXTURE_DIR) / "tiny_mlp.onnx";
+    }
+
+    ASSERT_TRUE(std::filesystem::exists(fixture_path))
+        << "Required ONNX fixture missing: " << fixture_path;
+
+    std::ostringstream out;
+    std::ostringstream err;
+    const std::string path = fixture_path.string();
+    const char* argv[] = {"onnxcc", "dump", "--model", path.c_str(), "--show-graph"};
+
+    const int code = onnxcc::cli::run(5, argv, out, err);
+
+    EXPECT_EQ(onnxcc::cli::kExitOk, code);
+    EXPECT_TRUE(err.str().empty());
+    EXPECT_NE(out.str().find("nodes (6):"), std::string::npos);
+    EXPECT_NE(out.str().find("initializers (4):"), std::string::npos);
+    EXPECT_NE(out.str().find("total initializer size: 232 bytes"), std::string::npos);
+}
+
 }  // namespace

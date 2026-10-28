@@ -5,6 +5,10 @@
 #include <system_error>
 
 #include "onnxcc/cli/exit_codes.h"
+#include "onnxcc/ir/graph.h"
+#include "onnxcc/ir/graph_printer.h"
+#include "onnxcc/ir/status.h"
+#include "onnxcc/parser/parser.h"
 #include "onnxcc/version.h"
 
 namespace onnxcc::cli {
@@ -36,7 +40,13 @@ namespace onnxcc::cli {
         }
 
         if (options.show_graph) {
-            out << "graph: not parsed yet, the model is only validated as a path for now\n";
+            Graph graph;
+            const Status parse_status = parser::parse_file(options.model, graph);
+            if (!parse_status.ok()) {
+                err << "onnxcc dump: error: " << parse_status.message() << "\n";
+                return kExitFailure;
+            }
+            print_graph(graph, out);
         }
 
         return kExitOk;

@@ -7,6 +7,7 @@ add_executable(unit_tests
     unit/test_attribute.cpp
     unit/test_datatype.cpp
     unit/test_graph.cpp
+    unit/test_graph_printer.cpp
     unit/test_tensor_shape.cpp
     unit/test_tensor_view.cpp
 )
