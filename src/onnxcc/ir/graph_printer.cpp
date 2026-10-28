@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <exception>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -33,8 +34,8 @@ void print_tensor_summary(const std::vector<Tensor>& tensors, std::ostream& out)
 
 // Computes the size in bytes of a tensor's data. If data is stored in memory,
 // uses data.size(); otherwise computes from shape and dtype if defined.
-// If shape is dynamic or calculation overflows, returns 0 as size cannot be determined.
-std::size_t get_tensor_byte_size(const Tensor& t) {
+// Returns std::nullopt for dynamic shapes or calculation overflows to distinguish from genuinely 0-byte tensors.
+std::optional<std::size_t> get_tensor_byte_size(const Tensor& t) {
     if (!t.data.empty()) {
         return t.data.size();
     }
@@ -42,11 +43,10 @@ std::size_t get_tensor_byte_size(const Tensor& t) {
         try {
             return t.shape.num_bytes(t.dtype);
         } catch (const std::exception&) {
-            // Shape overflow or undefined size returns 0
-            return 0;
+            return std::nullopt;
         }
     }
-    return 0;
+    return std::nullopt;
 }
 
 }  // namespace
@@ -121,16 +121,28 @@ void print_graph(const Graph& graph, std::ostream& out) {
     // initializers with dtype, shape, byte size and a total
     out << "initializers (" << graph.initializers.size() << "):\n";
     std::size_t total_bytes = 0;
+    bool has_unknown_size = false;
     for (const Tensor& init : graph.initializers) {
-        const std::size_t bytes = get_tensor_byte_size(init);
-        total_bytes += bytes;
+        const auto maybe_bytes = get_tensor_byte_size(init);
 
         out << init.name << ": "
             << dtype_name(init.dtype) << " "
-            << init.shape.to_string() << " ("
-            << bytes << " bytes)\n";
+            << init.shape.to_string();
+
+        if (maybe_bytes.has_value()) {
+            total_bytes += *maybe_bytes;
+            out << " (" << *maybe_bytes << " bytes)\n";
+        } else {
+            has_unknown_size = true;
+            out << " (unknown)\n";
+        }
     }
-    out << "total initializer size: " << total_bytes << " bytes\n";
+    out << "total initializer size: ";
+    if (has_unknown_size) {
+        out << "unknown\n";
+    } else {
+        out << total_bytes << " bytes\n";
+    }
 }
 
 }  // namespace onnxcc

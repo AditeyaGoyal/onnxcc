@@ -164,6 +164,23 @@ TEST(GraphPrinter, DynamicDimensionRendersAsQuestionMark) {
     EXPECT_NE(out.find("dynamic_input (FLOAT32 [?, 10])"), std::string::npos);
 }
 
+TEST(GraphPrinter, DynamicInitializerRendersUnknownSize) {
+    Graph g;
+    Tensor t;
+    t.name = "dynamic_w";
+    t.dtype = DataType::FLOAT32;
+    t.shape.dims = {-1, 10};
+    t.is_initializer = true;
+    g.initializers.push_back(std::move(t));
+
+    std::ostringstream oss;
+    print_graph(g, oss);
+    const std::string out = oss.str();
+
+    EXPECT_NE(out.find("dynamic_w: FLOAT32 [?, 10] (unknown)"), std::string::npos);
+    EXPECT_NE(out.find("total initializer size: unknown\n"), std::string::npos);
+}
+
 TEST(GraphPrinter, PrintsInitializersAndTotalBytes) {
     const Graph g = make_test_graph();
     std::ostringstream oss;
@@ -197,9 +214,8 @@ TEST(GraphPrinter, ParsesAndPrintsRealMlpModel) {
         fixture_path = std::filesystem::path(ONNXCC_FIXTURE_DIR) / "tiny_mlp.onnx";
     }
 
-    if (!std::filesystem::exists(fixture_path)) {
-        GTEST_SKIP() << "Fixture file not found at " << fixture_path;
-    }
+    ASSERT_TRUE(std::filesystem::exists(fixture_path))
+        << "Required ONNX fixture missing: " << fixture_path;
 
     Graph graph;
     const Status status = parser::parse_file(fixture_path.string(), graph);
