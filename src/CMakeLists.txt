@@ -8,7 +8,7 @@ add_library(onnxcc_lib STATIC
     onnxcc/ir/attribute.cpp
     onnxcc/ir/datatype.cpp
     onnxcc/ir/graph.cpp
-    onxcc/ir/graph_printer.cpp
+    onnxcc/ir/graph_printer.cpp
     onnxcc/ir/tensor_shape.cpp
     onnxcc/memory/arena.cpp
     onnxcc/memory/tensor_view.cpp
